@@ -438,6 +438,7 @@ def main(
 	language: str = 'zh-TW',
 	output_file: Optional[str] = None,
 	strategy: str = 'map_reduce',
+	provider: str = 'claude',
 ):
 	"""
 	Main function for EPUB summarization.
@@ -445,11 +446,12 @@ def main(
 	Args:
 		epub_path: Path to the EPUB file.
 		use_llm: Whether to use Claude API (False for dry run).
-		api_key: Anthropic API key.
-		model: Claude model to use.
+		api_key: API key for the LLM provider.
+		model: Model to use.
 		language: Output language.
 		output_file: Optional file to save results.
 		strategy: Summarization strategy ('map_reduce' or 'refine').
+		provider: LLM provider ('claude' or 'openai').
 	"""
 	print(f"載入 EPUB: {epub_path}")
 
@@ -474,11 +476,12 @@ def main(
 		if use_llm:
 			from llm import create_refine_functions
 
-			print(f"\n使用 Claude API 生成摘要 (策略: refine, 語言: {language})...")
+			print(f"\n使用 {provider.upper()} API 生成摘要 (策略: refine, 語言: {language})...")
 			refine_fn, finalize_fn = create_refine_functions(
 				api_key=api_key,
 				model=model,
 				language=language,
+				provider=provider,
 			)
 		else:
 			print("\n[測試模式] 使用假摘要 (refine 策略)...")
@@ -494,11 +497,12 @@ def main(
 		if use_llm:
 			from llm import create_summarizer_functions
 
-			print(f"\n使用 Claude API 生成摘要 (策略: map_reduce, 語言: {language})...")
+			print(f"\n使用 {provider.upper()} API 生成摘要 (策略: map_reduce, 語言: {language})...")
 			chapter_fn, book_fn = create_summarizer_functions(
 				api_key=api_key,
 				model=model,
 				language=language,
+				provider=provider,
 			)
 		else:
 			print("\n[測試模式] 使用假摘要...")
@@ -549,7 +553,19 @@ def main(
 		# Use epub filename (without extension) as base name
 		epub_basename = os.path.splitext(os.path.basename(epub_path))[0]
 		strategy_suffix = 'mapreduce' if strategy == 'map_reduce' else 'refine'
-		output_file = os.path.join(epub_dir, f"{epub_basename}-{strategy_suffix}.md")
+		provider_suffix = provider.lower()
+		# Get model name (use default if not specified)
+		if model:
+			model_suffix = model.lower()
+		else:
+			# Use default model names
+			if provider.lower() == 'claude':
+				model_suffix = 'claude-haiku-4-5'
+			else:
+				model_suffix = 'gpt-5-mini'
+		# Simplify model name for filename (remove date suffix)
+		model_suffix = model_suffix.split('-202')[0]  # Remove date like -20250514 or -2025-08-07
+		output_file = os.path.join(epub_dir, f"{epub_basename}-{strategy_suffix}-{provider_suffix}-{model_suffix}.md")
 
 	# Save output
 	with open(output_file, 'w', encoding='utf-8') as f:
@@ -567,13 +583,17 @@ if __name__ == '__main__':
 		formatter_class=argparse.RawDescriptionHelpFormatter,
 		epilog="""
 範例:
-  # 使用 Claude API 生成摘要 (預設 map_reduce 策略)
-  # 輸出: book-mapreduce.md
+  # 使用 Claude API 生成摘要 (預設)
+  # 輸出: book-mapreduce-claude.md
   python summarize.py book.epub
 
-  # 使用 refine 策略（適合長篇書籍）
-  # 輸出: book-refine.md
-  python summarize.py book.epub --strategy refine
+  # 使用 OpenAI API 生成摘要
+  # 輸出: book-mapreduce-openai.md
+  python summarize.py book.epub --provider openai
+
+  # 使用 refine 策略 + OpenAI
+  # 輸出: book-refine-openai.md
+  python summarize.py book.epub --strategy refine --provider openai
 
   # 測試模式（不呼叫 API）
   python summarize.py book.epub --dry-run
@@ -587,6 +607,10 @@ if __name__ == '__main__':
 策略說明:
   map_reduce: 先為每個章節生成摘要，再合併成全書摘要（產生章節摘要）
   refine: 逐章節精煉摘要，最終產生全書摘要（僅產生全書摘要，更連貫）
+
+LLM 提供者:
+  claude: 使用 Anthropic Claude API（需設定 ANTHROPIC_API_KEY）
+  openai: 使用 OpenAI API（需設定 OPENAI_API_KEY）
 		""",
 	)
 
@@ -603,12 +627,18 @@ if __name__ == '__main__':
 		help='摘要策略（預設: map_reduce）',
 	)
 	parser.add_argument(
+		'--provider',
+		choices=['claude', 'openai'],
+		default='claude',
+		help='LLM 提供者（預設: claude）',
+	)
+	parser.add_argument(
 		'--api-key',
-		help='Anthropic API Key（預設使用 ANTHROPIC_API_KEY 環境變數）',
+		help='API Key（預設使用 ANTHROPIC_API_KEY 或 OPENAI_API_KEY 環境變數）',
 	)
 	parser.add_argument(
 		'--model',
-		help='Claude 模型名稱（預設: claude-sonnet-4-20250514）',
+		help='模型名稱（Claude 預設: claude-haiku-4-5-20251001, OpenAI 預設: gpt-5-mini-2025-08-07）',
 	)
 	parser.add_argument(
 		'--language',
@@ -617,7 +647,7 @@ if __name__ == '__main__':
 	)
 	parser.add_argument(
 		'-o', '--output',
-		help='輸出檔案路徑（預設: [epub檔名]-[策略].md）',
+		help='輸出檔案路徑（預設: [epub檔名]-[策略]-[provider].md）',
 	)
 
 	args = parser.parse_args()
@@ -630,4 +660,5 @@ if __name__ == '__main__':
 		language=args.language,
 		output_file=args.output,
 		strategy=args.strategy,
+		provider=args.provider,
 	)

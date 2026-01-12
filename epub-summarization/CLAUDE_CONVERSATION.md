@@ -321,3 +321,558 @@ def test_cli_help():
 - 環境隔離，不影響真實系統
 
 這是測試 Click 應用程式的標準做法，比用 `subprocess` 呼叫 CLI 更簡潔有效。
+
+---
+
+## 2026-01-12 OpenAI 支援開發與測試
+
+### 17. 新增 OpenAI GPT 支援
+
+**需求**: 在現有的 Claude API 支援之外，新增 OpenAI GPT 模型支援
+
+**實作**:
+
+1. **重構 llm.py - 抽象基底類別**:
+```python
+class BaseSummarizer(ABC):
+    """Abstract base class for LLM summarizers."""
+
+    def __init__(self, max_tokens: int = 4096):
+        self.max_tokens = max_tokens
+
+    @abstractmethod
+    def _call_api(self, prompt: str) -> str:
+        """Make API call to LLM. Must be implemented by subclasses."""
+        pass
+
+    # 共用方法: summarize_chapter, summarize_book, refine_summary, etc.
+```
+
+2. **新增 OpenAISummarizer 類別**:
+```python
+class OpenAISummarizer(BaseSummarizer):
+    """OpenAI API wrapper for text summarization."""
+
+    DEFAULT_MODEL = 'gpt-5-mini-2025-08-07'
+
+    def _call_api(self, prompt: str) -> str:
+        response = self.client.chat.completions.create(
+            model=self.model,
+            max_completion_tokens=self.max_tokens,
+            messages=[{'role': 'user', 'content': prompt}],
+        )
+        content = response.choices[0].message.content
+        return content if content else ''
+```
+
+3. **更新工廠函數**:
+```python
+def _create_summarizer(provider: str = 'claude', ...) -> BaseSummarizer:
+    if provider == 'claude':
+        return ClaudeSummarizer(...)
+    elif provider == 'openai':
+        return OpenAISummarizer(...)
+```
+
+4. **更新 requirements.txt**:
+```
+anthropic>=0.40.0
+openai>=1.0.0
+```
+
+5. **更新 __init__.py 匯出**:
+```python
+from .llm import (
+    BaseSummarizer,
+    ClaudeSummarizer,
+    OpenAISummarizer,
+    create_summarizer_functions,
+    create_refine_functions,
+)
+```
+
+---
+
+### 18. 修改輸出檔名格式
+
+**需求**: 將輸出檔名從 `[檔名]-[策略].md` 改為 `[檔名]-[策略]-[provider].md`
+
+**新格式範例**:
+- `178998-mapreduce-claude.md`
+- `178998-mapreduce-openai.md`
+
+**修改 summarize.py**:
+```python
+provider_suffix = provider.lower()
+output_file = os.path.join(
+    epub_dir,
+    f"{epub_basename}-{strategy_suffix}-{provider_suffix}.md"
+)
+```
+
+---
+
+### 19. OpenAI API 問題排查
+
+#### 問題 1: `max_tokens` 不支援
+
+**錯誤訊息**:
+```
+'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.
+```
+
+**解決**: 將 OpenAI API 呼叫從 `max_tokens` 改為 `max_completion_tokens`
+
+---
+
+#### 問題 2: max_tokens 預設值太小
+
+**錯誤訊息**:
+```
+Could not finish the message because max_tokens or model output limit was reached
+```
+
+**解決**: 將 `BaseSummarizer` 的 `max_tokens` 預設值從 1024 增加到 4096
+
+---
+
+#### 問題 3: GPT-5-mini 模型回傳空內容
+
+**現象**:
+- 章節摘要部分生成正常
+- 全書摘要經常為空
+
+**調查過程**:
+
+1. 最初使用 `gpt-5-mini` → 空內容
+2. 改用 `gpt-4o-mini` → 正常運作
+3. 用戶指出正確名稱為 `gpt-5-mini-2025-08-07` → 仍有空內容
+4. 嘗試 `gpt-5-nano-2025-08-07` → 仍為空
+
+**Debug 輸出**:
+```python
+Content: ''
+Finish reason: length
+Usage: CompletionUsage(
+    completion_tokens=100,
+    prompt_tokens=8,
+    total_tokens=108,
+    completion_tokens_details=CompletionTokensDetails(
+        reasoning_tokens=100,  # ← 問題所在
+        ...
+    )
+)
+```
+
+**根本原因**:
+GPT-5 系列是 reasoning model，會使用 `reasoning_tokens` 進行內部推理。當 `max_completion_tokens` 設定不夠大時，所有 token 都被用於推理，導致輸出內容為空。
+
+---
+
+### 20. OpenAI 測試結果
+
+使用 `gpt-5-mini-2025-08-07` 模型測試 4 本 EPUB:
+
+| 檔案 | 全書摘要 | 章節摘要 | 備註 |
+|------|----------|----------|------|
+| 178998.epub (原子習慣) | ✓ | ✓ | 第二次執行才成功 |
+| 318347.epub (我可能錯了) | ✓ | ✓ | |
+| 362484.epub (納瓦爾寶典) | ✓ | ✓ | |
+| 424489.epub (世界盡頭的咖啡館) | ✗ | ✓ | 重複測試仍為空 |
+
+**輸出檔案位置**: `epubs/` 目錄
+- `178998-mapreduce-openai.md`
+- `318347-mapreduce-openai.md`
+- `362484-mapreduce-openai.md`
+- `424489-mapreduce-openai.md`
+
+---
+
+### 21. GPT-5 Reasoning Model 的限制
+
+**發現**:
+- GPT-5 系列（如 gpt-5-mini, gpt-5-nano）是 reasoning model
+- 與 GPT-4 系列不同，會額外使用 reasoning tokens
+- `finish_reason: length` 表示達到 token 上限
+- 當 prompt 較複雜或輸入較長時，可能所有 token 都用於推理，無輸出內容
+
+**可能的解決方案**:
+1. 大幅增加 `max_completion_tokens`（如 8192 或更高）
+2. 改用 `gpt-4o-mini` 等非 reasoning model
+3. 簡化 prompt 以減少推理需求
+
+**結論**:
+GPT-5-mini 模型在 epub-summarization 場景下不穩定，3/4 的書籍能正常產生全書摘要，但 424489.epub 持續失敗。建議使用 Claude 或 GPT-4 系列以獲得更穩定的結果。
+
+---
+
+### 技術筆記補充
+
+#### Conda 環境變數與 Bash 環境變數
+
+再次遇到環境變數問題：
+
+```bash
+# 這不會讀取 conda 環境變數
+python summarize.py ...
+
+# 需要用 conda run 執行
+conda run -n epub-utils python summarize.py ...
+```
+
+**查看 conda 環境變數**:
+```bash
+conda run -n epub-utils env | grep OPENAI
+```
+
+#### OpenAI 模型列表查詢
+
+```python
+import openai
+client = openai.OpenAI()
+models = client.models.list()
+for m in models.data:
+    if 'gpt-5' in m.id:
+        print(m.id)
+```
+
+---
+
+### 22. 修正 GPT-5 Reasoning Tokens 問題
+
+**發現**: GPT-5 系列有 `reasoning_effort` 參數可控制 reasoning tokens 的使用量
+
+**OpenAI 官方文件說明**:
+- 早期 reasoning model（如 o3）支援 `low`, `medium`, `high` 三種設定
+- GPT-5.2 新增 `none` 選項，為預設值，提供較低延遲
+- 設定為 `none` 時，若需要推理，應在 prompt 中鼓勵模型「思考」或列出步驟
+
+**修改 llm.py**:
+```python
+def _call_api(self, prompt: str) -> str:
+    """Make API call to OpenAI."""
+    try:
+        response = self.client.chat.completions.create(
+            model=self.model,
+            max_completion_tokens=self.max_tokens,
+            reasoning_effort='none',  # Disable reasoning tokens for GPT-5 models
+            messages=[
+                {'role': 'user', 'content': prompt}
+            ],
+        )
+        content = response.choices[0].message.content
+        return content if content else ''
+    except openai.APIError as e:
+        print(f"OpenAI API Error: {e}")
+        raise
+```
+
+**預期效果**: 減少 reasoning tokens 後，更多 completion tokens 會用於實際輸出，解決全書摘要為空的問題。
+
+---
+
+### 23. 測試結果 - reasoning_effort 修正
+
+**問題**: `gpt-5-mini-2025-08-07` 不支援 `reasoning_effort='none'`
+
+**錯誤訊息**:
+```
+Unsupported value: 'reasoning_effort' does not support 'none' with this model.
+Supported values are: 'minimal', 'low', 'medium', and 'high'.
+```
+
+**修正**: 將 `reasoning_effort` 從 `'none'` 改為 `'minimal'`
+
+```python
+reasoning_effort='minimal',  # Minimize reasoning tokens for GPT-5 models
+```
+
+**測試結果**: 424489.epub（之前持續失敗的檔案）現在成功產生完整的全書摘要！
+
+**結論**:
+- GPT-5.2 支援 `'none'` 選項
+- GPT-5-mini 系列只支援 `'minimal', 'low', 'medium', 'high'`
+- 使用 `'minimal'` 可有效減少 reasoning tokens，讓更多 token 用於輸出內容
+
+---
+
+### 24. 進一步測試 - GPT-5-mini 仍不穩定
+
+使用 `reasoning_effort='minimal'` 測試其他檔案：
+
+| 檔案 | gpt-5-mini 全書摘要 |
+|------|---------------------|
+| 424489.epub (世界盡頭的咖啡館) | ✓ 成功 |
+| 318347.epub (我可能錯了) | ✓ 成功（非常詳細）|
+| 362484.epub (納瓦爾寶典) | ✗ 空白 |
+
+**結論**: GPT-5-mini 即使加了 `reasoning_effort='minimal'`，仍有不穩定的情況。
+
+---
+
+### 25. 改用 gpt-4o 模型
+
+嘗試使用 `gpt-4o` 時發現錯誤：
+
+```
+Unrecognized request argument supplied: reasoning_effort
+```
+
+**原因**: `gpt-4o` 不是 reasoning model，不支援 `reasoning_effort` 參數。
+
+**修正 llm.py**: 根據模型名稱動態決定是否加入 `reasoning_effort`
+
+```python
+def _call_api(self, prompt: str) -> str:
+    """Make API call to OpenAI."""
+    try:
+        # Build request parameters
+        params = {
+            'model': self.model,
+            'max_completion_tokens': self.max_tokens,
+            'messages': [{'role': 'user', 'content': prompt}],
+        }
+        # Only add reasoning_effort for GPT-5 models (reasoning models)
+        if 'gpt-5' in self.model or 'o1' in self.model or 'o3' in self.model:
+            params['reasoning_effort'] = 'minimal'
+
+        response = self.client.chat.completions.create(**params)
+        content = response.choices[0].message.content
+        return content if content else ''
+    except openai.APIError as e:
+        print(f"OpenAI API Error: {e}")
+        raise
+```
+
+---
+
+### 26. gpt-4o 測試結果
+
+使用 `gpt-4o` 模型重新測試：
+
+```bash
+conda run -n epub-utils python summarize.py ../epubs/362484.epub --provider openai --model gpt-4o
+conda run -n epub-utils python summarize.py ../epubs/178998.epub --provider openai --model gpt-4o
+```
+
+| 檔案 | gpt-4o 全書摘要 |
+|------|-----------------|
+| 362484.epub (納瓦爾寶典) | ✓ 完整 |
+| 178998.epub (原子習慣) | ✓ 完整 |
+
+**結論**:
+- `gpt-4o` 非常穩定，100% 成功率
+- `gpt-5-mini` 有 reasoning tokens 問題，即使設定 `reasoning_effort='minimal'` 仍不穩定
+- 建議使用 `gpt-4o` 或 Claude 以獲得穩定結果
+
+---
+
+### 27. OpenAI 模型選擇建議
+
+| 模型 | 穩定性 | reasoning_effort | 建議用途 |
+|------|--------|------------------|----------|
+| gpt-4o | ✓ 穩定 | 不支援 | 推薦使用 |
+| gpt-4o-mini | ✓ 穩定 | 不支援 | 成本較低的選擇 |
+| gpt-5-mini | ✗ 不穩定 | 需設為 minimal | 不建議用於摘要任務 |
+| gpt-5-nano | ✗ 不穩定 | 需設為 minimal | 不建議用於摘要任務 |
+
+---
+
+## 2026-01-12 完整模型測試與 max_tokens 修復
+
+### 28. GPT-4o 完整測試（Map Reduce + Refine）
+
+**測試命令**:
+```bash
+conda run -n epub-utils python summarize.py ../epubs/[檔案].epub --provider openai --model gpt-4o --strategy [策略]
+```
+
+**Map Reduce 測試結果**:
+
+| 檔案 | 狀態 |
+|------|------|
+| 178998.epub (原子習慣) | ✓ |
+| 318347.epub (我可能錯了) | ✓ |
+| 362484.epub (納瓦爾寶典) | ✓ |
+| 424489.epub (世界盡頭的咖啡館) | ✓ |
+
+**Refine 測試結果**:
+
+| 檔案 | 狀態 |
+|------|------|
+| 178998.epub (原子習慣) | ✓ |
+| 318347.epub (我可能錯了) | ✓ |
+| 362484.epub (納瓦爾寶典) | ✓ |
+| 424489.epub (世界盡頭的咖啡館) | ✓ |
+
+**結論**: GPT-4o 模型在兩種策略下都 100% 穩定。
+
+---
+
+### 29. Claude Sonnet 4 Map Reduce 測試
+
+**測試命令**:
+```bash
+conda run -n epub-utils python summarize.py ../epubs/[檔案].epub --provider claude --model claude-sonnet-4-20250514 --strategy map_reduce
+```
+
+**測試結果**:
+
+| 檔案 | 狀態 |
+|------|------|
+| 178998.epub (原子習慣) | ✓ |
+| 318347.epub (我可能錯了) | ✓ |
+| 362484.epub (納瓦爾寶典) | ✓ |
+| 424489.epub (世界盡頭的咖啡館) | ✓ |
+
+---
+
+### 30. 變更預設 Claude 模型
+
+**修改**: 將預設 Claude 模型從 `claude-sonnet-4-20250514` 改為 `claude-haiku-4-5-20251001`
+
+**修改位置**:
+- `llm.py:213` - `ClaudeSummarizer.DEFAULT_MODEL`
+- `summarize.py` - Help text 更新
+
+**原因**: Haiku 4.5 成本較低，適合大量摘要任務。
+
+---
+
+### 31. Claude Sonnet 4 + Haiku 4.5 Refine 測試
+
+**測試 Sonnet 4**:
+```bash
+conda run -n epub-utils python summarize.py ../epubs/[檔案].epub --provider claude --model claude-sonnet-4-20250514 --strategy refine
+```
+
+**測試 Haiku 4.5**:
+```bash
+conda run -n epub-utils python summarize.py ../epubs/[檔案].epub --provider claude --model claude-haiku-4-5-20251001 --strategy refine
+```
+
+**初始測試結果**:
+
+| 檔案 | Sonnet 4 | Haiku 4.5 |
+|------|----------|-----------|
+| 178998.epub | ✓ | ✓ |
+| 318347.epub | ✓ | ✓ |
+| 362484.epub | ✓ | ✓ |
+| 424489.epub | ✓ | ✓ |
+
+---
+
+### 32. 發現問題：Claude Refine 摘要結尾被截斷
+
+**問題描述**: 用戶發現 Claude refine 產生的 8 個摘要檔案，大多數結尾不完整，句子在中間被切斷。
+
+**問題範例**:
+```
+# 被截斷的結尾
+- 362484-refine-claude-claude-sonnet-4.md: "...長期成功"
+- 178998-refine-claude-claude-sonnet-4.md: "...心得分"
+- 318347-refine-claude-claude-sonnet-4.md: "...體"
+```
+
+**調查過程**:
+1. 讀取多個 Claude refine 輸出檔案
+2. 檢查結尾發現句子在中間被截斷
+3. 檢查 `llm.py` 中的 `max_tokens` 設定
+
+**根本原因**:
+`ClaudeSummarizer` 和 `OpenAISummarizer` 的 `max_tokens` 預設值為 1024，對於 `finalize_refined_summary` 函數（要求 500-800 字）來說太小。
+
+```python
+# 原本的設定
+def __init__(self, ..., max_tokens: int = 1024):
+```
+
+---
+
+### 33. 修復 max_tokens 問題
+
+**修改**: 將 `max_tokens` 預設值從 1024 增加到 2048
+
+**修改位置**:
+- `llm.py:219` - `ClaudeSummarizer.__init__`
+- `llm.py:265` - `OpenAISummarizer.__init__`
+
+```python
+# 修改後
+def __init__(
+    self,
+    api_key: Optional[str] = None,
+    model: Optional[str] = None,
+    max_tokens: int = 2048,  # 從 1024 改為 2048
+):
+```
+
+---
+
+### 34. 驗證修復並重新執行測試
+
+**驗證測試**: 先執行 424489.epub Haiku refine 確認修復有效
+
+```bash
+conda run -n epub-utils python summarize.py ../epubs/424489.epub --provider claude --model claude-haiku-4-5-20251001 --strategy refine
+```
+
+**結果**: 結尾完整，修復成功。
+
+**重新執行其他 7 個測試**:
+
+| 模型 | 檔案 | 狀態 |
+|------|------|------|
+| Sonnet 4 | 178998.epub | ✓ 結尾完整 |
+| Sonnet 4 | 318347.epub | ✓ 結尾完整 |
+| Sonnet 4 | 362484.epub | ✓ 結尾完整 |
+| Sonnet 4 | 424489.epub | ✓ 結尾完整 |
+| Haiku 4.5 | 178998.epub | ✓ 結尾完整 |
+| Haiku 4.5 | 318347.epub | ✓ 結尾完整 |
+| Haiku 4.5 | 362484.epub | ✓ 結尾完整 |
+
+**最終驗證**:
+```bash
+for f in epubs/*-refine-claude-*.md; do echo "=== $(basename $f) ==="; tail -3 "$f"; done
+```
+
+所有 8 個 Claude refine 檔案現在都有完整的結尾。
+
+---
+
+### 35. 測試輸出檔案位置
+
+**Sonnet 4 refine 檔案** (在 `epubs/` 目錄):
+- `178998-refine-claude-claude-sonnet-4.md`
+- `318347-refine-claude-claude-sonnet-4.md`
+- `362484-refine-claude-claude-sonnet-4.md`
+- `424489-refine-claude-claude-sonnet-4.md`
+
+**Haiku 4.5 refine 檔案** (在 `epubs/Claude/` 目錄):
+- `178998-refine-claude-claude-haiku-4-5.md`
+- `318347-refine-claude-claude-haiku-4-5.md`
+- `362484-refine-claude-claude-haiku-4-5.md`
+- `424489-refine-claude-claude-haiku-4-5.md`
+
+---
+
+### 技術筆記補充
+
+#### max_tokens vs max_completion_tokens
+
+| Provider | 參數名稱 | 用途 |
+|----------|----------|------|
+| Claude | max_tokens | 控制輸出長度上限 |
+| OpenAI (GPT-4) | max_completion_tokens | 控制輸出長度上限 |
+| OpenAI (GPT-5) | max_completion_tokens | 控制輸出 + reasoning tokens 上限 |
+
+#### 摘要長度與 token 需求估算
+
+| 語言 | 字元/token 比例 |
+|------|----------------|
+| 英文 | ~4 字元/token |
+| 中文 | ~1.5-2 字元/token |
+
+對於 500-800 中文字的摘要，約需要 400-550 tokens。原本的 1024 tokens 理論上足夠，但實際上 LLM 可能產生更長的輸出，加上格式化（標題、分段），容易超出限制。
+
+將 max_tokens 增加到 2048 提供足夠的緩衝空間。

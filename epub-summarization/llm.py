@@ -1,45 +1,28 @@
 """
 LLM Integration Module
 
-Provides Claude API integration for text summarization.
+Provides LLM API integration for text summarization.
+Supports Claude (Anthropic) and OpenAI GPT models.
 """
 
 import os
+from abc import ABC, abstractmethod
 from typing import Optional
 
 import anthropic
+import openai
 
 
-class ClaudeSummarizer:
-	"""Claude API wrapper for text summarization."""
+class BaseSummarizer(ABC):
+	"""Abstract base class for LLM summarizers."""
 
-	DEFAULT_MODEL = 'claude-sonnet-4-20250514'
-	MAX_CONTENT_TOKENS = 100000  # Leave room for prompt and response
-
-	def __init__(
-		self,
-		api_key: Optional[str] = None,
-		model: Optional[str] = None,
-		max_tokens: int = 1024,
-	):
-		"""
-		Initialize Claude summarizer.
-
-		Args:
-			api_key: Anthropic API key. Defaults to ANTHROPIC_API_KEY env var.
-			model: Model to use. Defaults to claude-sonnet-4-20250514.
-			max_tokens: Maximum tokens for response.
-		"""
-		self.api_key = api_key or os.environ.get('ANTHROPIC_API_KEY')
-		if not self.api_key:
-			raise ValueError(
-				"API key required. Set ANTHROPIC_API_KEY environment variable "
-				"or pass api_key parameter."
-			)
-
-		self.client = anthropic.Anthropic(api_key=self.api_key)
-		self.model = model or self.DEFAULT_MODEL
+	def __init__(self, max_tokens: int = 4096):
 		self.max_tokens = max_tokens
+
+	@abstractmethod
+	def _call_api(self, prompt: str) -> str:
+		"""Make API call to LLM. Must be implemented by subclasses."""
+		pass
 
 	def summarize_chapter(self, content: str, title: str, language: str = 'zh-TW') -> str:
 		"""
@@ -56,7 +39,6 @@ class ClaudeSummarizer:
 		if not content or not content.strip():
 			return ''
 
-		# Truncate content if too long
 		content = self._truncate_content(content)
 
 		prompt = f"""請為以下章節內容撰寫摘要。
@@ -111,21 +93,6 @@ class ClaudeSummarizer:
 
 		return self._call_api(prompt)
 
-	def _call_api(self, prompt: str) -> str:
-		"""Make API call to Claude."""
-		try:
-			message = self.client.messages.create(
-				model=self.model,
-				max_tokens=self.max_tokens,
-				messages=[
-					{'role': 'user', 'content': prompt}
-				],
-			)
-			return message.content[0].text
-		except anthropic.APIError as e:
-			print(f"API Error: {e}")
-			raise
-
 	def refine_summary(
 		self,
 		existing_summary: str,
@@ -157,7 +124,6 @@ class ClaudeSummarizer:
 		new_content = self._truncate_content(new_content, max_chars=200000)
 
 		if not existing_summary:
-			# First chapter - create initial summary
 			prompt = f"""請為以下書籍的第一個章節撰寫初始摘要。
 
 書名：{book_title}
@@ -174,7 +140,6 @@ class ClaudeSummarizer:
 
 請直接輸出摘要內容，不需要任何前綴或標題。"""
 		else:
-			# Subsequent chapters - refine existing summary
 			prompt = f"""請根據新的章節內容，精煉並擴充現有的書籍摘要。
 
 書名：{book_title}
@@ -242,29 +207,159 @@ class ClaudeSummarizer:
 		return content
 
 
+class ClaudeSummarizer(BaseSummarizer):
+	"""Claude API wrapper for text summarization."""
+
+	DEFAULT_MODEL = 'claude-haiku-4-5-20251001'
+
+	def __init__(
+		self,
+		api_key: Optional[str] = None,
+		model: Optional[str] = None,
+		max_tokens: int = 2048,
+	):
+		"""
+		Initialize Claude summarizer.
+
+		Args:
+			api_key: Anthropic API key. Defaults to ANTHROPIC_API_KEY env var.
+			model: Model to use. Defaults to claude-haiku-4-5-20251001.
+			max_tokens: Maximum tokens for response.
+		"""
+		super().__init__(max_tokens)
+		self.api_key = api_key or os.environ.get('ANTHROPIC_API_KEY')
+		if not self.api_key:
+			raise ValueError(
+				"API key required. Set ANTHROPIC_API_KEY environment variable "
+				"or pass api_key parameter."
+			)
+
+		self.client = anthropic.Anthropic(api_key=self.api_key)
+		self.model = model or self.DEFAULT_MODEL
+
+	def _call_api(self, prompt: str) -> str:
+		"""Make API call to Claude."""
+		try:
+			message = self.client.messages.create(
+				model=self.model,
+				max_tokens=self.max_tokens,
+				messages=[
+					{'role': 'user', 'content': prompt}
+				],
+			)
+			return message.content[0].text
+		except anthropic.APIError as e:
+			print(f"Claude API Error: {e}")
+			raise
+
+
+class OpenAISummarizer(BaseSummarizer):
+	"""OpenAI API wrapper for text summarization."""
+
+	DEFAULT_MODEL = 'gpt-5-mini-2025-08-07'
+
+	def __init__(
+		self,
+		api_key: Optional[str] = None,
+		model: Optional[str] = None,
+		max_tokens: int = 2048,
+	):
+		"""
+		Initialize OpenAI summarizer.
+
+		Args:
+			api_key: OpenAI API key. Defaults to OPENAI_API_KEY env var.
+			model: Model to use. Defaults to gpt-4o.
+			max_tokens: Maximum tokens for response.
+		"""
+		super().__init__(max_tokens)
+		self.api_key = api_key or os.environ.get('OPENAI_API_KEY')
+		if not self.api_key:
+			raise ValueError(
+				"API key required. Set OPENAI_API_KEY environment variable "
+				"or pass api_key parameter."
+			)
+
+		self.client = openai.OpenAI(api_key=self.api_key)
+		self.model = model or self.DEFAULT_MODEL
+
+	def _call_api(self, prompt: str) -> str:
+		"""Make API call to OpenAI."""
+		try:
+			# Build request parameters
+			params = {
+				'model': self.model,
+				'max_completion_tokens': self.max_tokens,
+				'messages': [{'role': 'user', 'content': prompt}],
+			}
+			# Only add reasoning_effort for GPT-5 models (reasoning models)
+			if 'gpt-5' in self.model or 'o1' in self.model or 'o3' in self.model:
+				params['reasoning_effort'] = 'minimal'
+
+			response = self.client.chat.completions.create(**params)
+			content = response.choices[0].message.content
+			return content if content else ''
+		except openai.APIError as e:
+			print(f"OpenAI API Error: {e}")
+			raise
+
+
+def _create_summarizer(
+	provider: str = 'claude',
+	api_key: Optional[str] = None,
+	model: Optional[str] = None,
+) -> BaseSummarizer:
+	"""
+	Create a summarizer instance based on provider.
+
+	Args:
+		provider: LLM provider ('claude' or 'openai').
+		api_key: API key for the provider.
+		model: Model to use.
+
+	Returns:
+		BaseSummarizer instance.
+
+	Raises:
+		ValueError: If provider is not supported.
+	"""
+	provider = provider.lower()
+	if provider == 'claude':
+		return ClaudeSummarizer(api_key=api_key, model=model)
+	elif provider == 'openai':
+		return OpenAISummarizer(api_key=api_key, model=model)
+	else:
+		raise ValueError(
+			f"Unsupported provider: {provider}. "
+			"Supported providers: 'claude', 'openai'"
+		)
+
+
 def create_summarizer_functions(
 	api_key: Optional[str] = None,
 	model: Optional[str] = None,
 	language: str = 'zh-TW',
+	provider: str = 'claude',
 ):
 	"""
 	Factory function to create summarizer functions for EPUBSummarizer.
 
 	Args:
-		api_key: Anthropic API key.
+		api_key: API key for the provider.
 		model: Model to use.
 		language: Output language.
+		provider: LLM provider ('claude' or 'openai').
 
 	Returns:
 		Tuple of (chapter_summarizer_fn, book_summarizer_fn)
 	"""
-	claude = ClaudeSummarizer(api_key=api_key, model=model)
+	summarizer = _create_summarizer(provider=provider, api_key=api_key, model=model)
 
 	def chapter_fn(content: str, title: str) -> str:
-		return claude.summarize_chapter(content, title, language)
+		return summarizer.summarize_chapter(content, title, language)
 
 	def book_fn(chapter_summaries: str, book_title: str) -> str:
-		return claude.summarize_book(chapter_summaries, book_title, language)
+		return summarizer.summarize_book(chapter_summaries, book_title, language)
 
 	return chapter_fn, book_fn
 
@@ -273,19 +368,21 @@ def create_refine_functions(
 	api_key: Optional[str] = None,
 	model: Optional[str] = None,
 	language: str = 'zh-TW',
+	provider: str = 'claude',
 ):
 	"""
 	Factory function to create refine strategy functions for EPUBSummarizer.
 
 	Args:
-		api_key: Anthropic API key.
+		api_key: API key for the provider.
 		model: Model to use.
 		language: Output language.
+		provider: LLM provider ('claude' or 'openai').
 
 	Returns:
 		Tuple of (refine_fn, finalize_fn)
 	"""
-	claude = ClaudeSummarizer(api_key=api_key, model=model)
+	summarizer = _create_summarizer(provider=provider, api_key=api_key, model=model)
 
 	def refine_fn(
 		existing_summary: str,
@@ -295,7 +392,7 @@ def create_refine_functions(
 		chapter_index: int,
 		total_chapters: int,
 	) -> str:
-		return claude.refine_summary(
+		return summarizer.refine_summary(
 			existing_summary=existing_summary,
 			new_content=new_content,
 			new_title=new_title,
@@ -306,6 +403,6 @@ def create_refine_functions(
 		)
 
 	def finalize_fn(refined_summary: str, book_title: str) -> str:
-		return claude.finalize_refined_summary(refined_summary, book_title, language)
+		return summarizer.finalize_refined_summary(refined_summary, book_title, language)
 
 	return refine_fn, finalize_fn

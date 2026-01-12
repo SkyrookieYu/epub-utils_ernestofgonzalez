@@ -16,7 +16,9 @@
 3. **輸出格式**
    - 輸出檔名: `[epub檔名]-[策略]-[provider]-[模型名稱].md`
    - 範例: `178998-mapreduce-openai-gpt-4o.md`
-   - 輸出位置: 與 EPUB 檔案相同目錄
+   - 輸出位置: 依 provider 分資料夾存放
+     - OpenAI: `epubs/OpenAI/`
+     - Claude: `epubs/Claude/`
 
 ---
 

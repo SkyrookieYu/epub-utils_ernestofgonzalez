@@ -842,17 +842,21 @@ for f in epubs/*-refine-claude-*.md; do echo "=== $(basename $f) ==="; tail -3 "
 
 ### 35. 測試輸出檔案位置
 
-**Sonnet 4 refine 檔案** (在 `epubs/` 目錄):
-- `178998-refine-claude-claude-sonnet-4.md`
-- `318347-refine-claude-claude-sonnet-4.md`
-- `362484-refine-claude-claude-sonnet-4.md`
-- `424489-refine-claude-claude-sonnet-4.md`
+測試輸出檔案依照 provider 分資料夾存放：
 
-**Haiku 4.5 refine 檔案** (在 `epubs/Claude/` 目錄):
-- `178998-refine-claude-claude-haiku-4-5.md`
-- `318347-refine-claude-claude-haiku-4-5.md`
-- `362484-refine-claude-claude-haiku-4-5.md`
-- `424489-refine-claude-claude-haiku-4-5.md`
+**OpenAI 輸出檔案** (在 `epubs/OpenAI/` 目錄):
+- `178998-mapreduce-openai-gpt-4o.md`
+- `178998-refine-openai-gpt-4o.md`
+- `318347-mapreduce-openai-gpt-4o.md`
+- `318347-refine-openai-gpt-4o.md`
+- `362484-mapreduce-openai-gpt-4o.md`
+- `362484-refine-openai-gpt-4o.md`
+- `424489-mapreduce-openai-gpt-4o.md`
+- `424489-refine-openai-gpt-4o.md`
+
+**Claude 輸出檔案** (在 `epubs/Claude/` 目錄):
+- Sonnet 4: `*-claude-claude-sonnet-4.md` (8 檔案)
+- Haiku 4.5: `*-claude-claude-haiku-4-5.md` (8 檔案)
 
 ---
 

@@ -256,7 +256,7 @@ class ClaudeSummarizer(BaseSummarizer):
 class OpenAISummarizer(BaseSummarizer):
 	"""OpenAI API wrapper for text summarization."""
 
-	DEFAULT_MODEL = 'gpt-5-mini-2025-08-07'
+	DEFAULT_MODEL = 'gpt-4o'
 
 	def __init__(
 		self,

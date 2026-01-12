@@ -344,7 +344,7 @@
 | Provider | 預設模型 | 環境變數 |
 |----------|----------|----------|
 | claude | claude-haiku-4-5-20251001 | ANTHROPIC_API_KEY |
-| openai | gpt-5-mini-2025-08-07 | OPENAI_API_KEY |
+| openai | gpt-4o | OPENAI_API_KEY |
 
 ### 使用方式
 
@@ -476,4 +476,4 @@ if 'gpt-5' in self.model or 'o1' in self.model or 'o3' in self.model:
 - [x] ~~新增 OpenAI 模型支援~~ (已完成)
 - [x] ~~修復 max_tokens 不足導致輸出被截斷問題~~ (已完成，1024 → 2048)
 - [ ] 考慮調整 prompt 以控制實際輸出長度更接近指定範圍
-- [ ] 考慮將預設 OpenAI 模型改為 gpt-4o（更穩定）
+- [x] ~~考慮將預設 OpenAI 模型改為 gpt-4o（更穩定）~~ (已完成)

@@ -178,6 +178,7 @@
 | Claude | `client.messages.create()` | 無 |
 | OpenAI (gpt-4o) | `client.chat.completions.create()` | 無 |
 | OpenAI (gpt-5) | `client.chat.completions.create()` | `reasoning_effort='minimal'` |
+| Ollama | `client.chat.completions.create()` | 使用 OpenAI-compatible API |
 
 ---
 
@@ -307,6 +308,33 @@
 
 ## 變更記錄
 
+### 2026-01-13
+- [x] 修復 GPT-5-mini 不穩定問題
+  - 將 `OpenAISummarizer` 的 `max_tokens` 從 2048 增加到 8192
+  - 修改位置: `llm.py:265`
+  - **根本原因**: GPT-5 的 `max_completion_tokens` 包含 reasoning tokens + 輸出 tokens
+  - 之前 2048 不夠是因為 reasoning 消耗大部分配額，導致輸出為空或截斷
+- [x] GPT-5-mini 完整測試 (max_completion_tokens=8192)
+  - **Map Reduce**: 4/4 成功
+  - **Refine**: 4/4 成功
+  - 測試檔案: 178998, 318347, 362484, 424489
+- [x] 新增 Ollama 本地模型支援
+  - 新增 `OllamaSummarizer` 類別 (`llm.py:307-349`)
+  - 使用 OpenAI-compatible API (http://localhost:11434/v1)
+  - 預設模型: `gpt-oss:20b`
+  - 支援 `OLLAMA_BASE_URL` 環境變數自訂 API 端點
+  - 更新 CLI 新增 `--provider ollama` 選項
+- [x] 修復 Ollama 輸出語言問題
+  - **問題**: Ollama (gpt-oss:20b) 輸出語言不一致
+    - 362484: 全書摘要為英文，部分章節為簡體中文
+    - 318347: 全書摘要為瑞典文（書籍原始語言）
+  - **解決方案**: 三層語言強制機制
+    1. 覆寫 `_get_language_instruction()` 使用更強烈指示：`'不論原始文本使用哪種語言，請務必以{language}撰寫輸出，禁止以其他語言為主體'`
+    2. 在 `_call_api()` 結尾追加語言提醒：`'【重要提醒】請確保輸出完全使用繁體中文（正體中文），禁止使用簡體中文或其他語言。'`
+    3. 新增 `_convert_to_traditional_chinese()` 後處理方法，將輸出回送 Ollama 進行繁體中文轉換
+  - **修改位置**: `llm.py:345-405`
+  - **測試結果**: 8/8 輸出檔案皆為繁體中文
+
 ### 2026-01-12 (續)
 - [x] 修復 Claude refine 摘要結尾被截斷問題
   - 將 `max_tokens` 預設值從 1024 增加到 2048
@@ -347,6 +375,7 @@
 |----------|----------|----------|
 | claude | claude-haiku-4-5-20251001 | ANTHROPIC_API_KEY |
 | openai | gpt-4o | OPENAI_API_KEY |
+| ollama | gpt-oss:20b | OLLAMA_BASE_URL (選用) |
 
 ### 使用方式
 
@@ -359,6 +388,12 @@ python summarize.py book.epub --provider openai
 
 # 指定 OpenAI 模型
 python summarize.py book.epub --provider openai --model gpt-4o
+
+# 使用 Ollama 本地模型
+python summarize.py book.epub --provider ollama
+
+# 使用 Ollama 指定模型
+python summarize.py book.epub --provider ollama --model llama3:70b
 ```
 
 ---
@@ -400,16 +435,25 @@ if 'gpt-5' in self.model or 'o1' in self.model or 'o3' in self.model:
 
 ### OpenAI 模型穩定性測試
 
-| 模型 | 穩定性 | reasoning_effort | 備註 |
-|------|--------|------------------|------|
-| gpt-4o | ✓ 穩定 | 不支援 | **推薦使用** |
-| gpt-4o-mini | ✓ 穩定 | 不支援 | 成本較低 |
-| gpt-5-mini | ✗ 不穩定 | 需設為 minimal | 偶爾產生空白摘要 |
-| gpt-5-nano | ✗ 不穩定 | 需設為 minimal | 偶爾產生空白摘要 |
+| 模型 | 穩定性 | reasoning_effort | max_completion_tokens | 備註 |
+|------|--------|------------------|----------------------|------|
+| gpt-4o | ✓ 穩定 | 不支援 | 2048 | **推薦使用** |
+| gpt-4o-mini | ✓ 穩定 | 不支援 | 2048 | 成本較低 |
+| gpt-5-mini | ✓ 穩定 | minimal | **8192** | 2026-01-13 修復 |
+| gpt-5-nano | ? 未測試 | minimal | 8192 | 需要更大的 token 預算 |
 
 #### 測試結果
 
-**gpt-5-mini-2025-08-07 (reasoning_effort='minimal')**:
+**gpt-5-mini-2025-08-07 (max_completion_tokens=8192, reasoning_effort='minimal')** - 2026-01-13 更新:
+
+| 檔案 | 全書摘要 |
+|------|----------|
+| 178998.epub (原子習慣) | ✓ |
+| 318347.epub (我可能錯了) | ✓ |
+| 362484.epub (納瓦爾寶典) | ✓ |
+| 424489.epub (世界盡頭的咖啡館) | ✓ |
+
+**gpt-5-mini-2025-08-07 (max_completion_tokens=2048, reasoning_effort='minimal')** - 舊版測試:
 
 | 檔案 | 全書摘要 |
 |------|----------|
@@ -425,7 +469,7 @@ if 'gpt-5' in self.model or 'o1' in self.model or 'o3' in self.model:
 | 178998.epub (原子習慣) | ✓ |
 | 362484.epub (納瓦爾寶典) | ✓ |
 
-**結論**: 建議使用 `gpt-4o` 或 `claude` 以獲得穩定結果。
+**結論**: GPT-5-mini 在 `max_completion_tokens=8192` 設定下已穩定。GPT-4o 和 Claude 仍為推薦選項。
 
 ---
 
@@ -479,3 +523,4 @@ if 'gpt-5' in self.model or 'o1' in self.model or 'o3' in self.model:
 - [x] ~~修復 max_tokens 不足導致輸出被截斷問題~~ (已完成，1024 → 2048)
 - [ ] 考慮調整 prompt 以控制實際輸出長度更接近指定範圍
 - [x] ~~考慮將預設 OpenAI 模型改為 gpt-4o（更穩定）~~ (已完成)
+- [x] ~~修復 GPT-5-mini 不穩定問題~~ (已完成，max_completion_tokens: 2048 → 8192)

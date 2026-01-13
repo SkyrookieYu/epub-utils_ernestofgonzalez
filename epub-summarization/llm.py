@@ -24,6 +24,10 @@ class BaseSummarizer(ABC):
 		"""Make API call to LLM. Must be implemented by subclasses."""
 		pass
 
+	def _get_language_instruction(self, language: str) -> str:
+		"""Get the language instruction for prompts. Can be overridden by subclasses."""
+		return f'請務必使用{language}撰寫'
+
 	def summarize_chapter(self, content: str, title: str, language: str = 'zh-TW') -> str:
 		"""
 		Generate a summary for a single chapter.
@@ -41,12 +45,13 @@ class BaseSummarizer(ABC):
 
 		content = self._truncate_content(content)
 
+		lang_instruction = self._get_language_instruction(language)
 		prompt = f"""請為以下章節內容撰寫摘要。
 
 章節標題：{title}
 
 要求：
-- 使用{language}撰寫
+- {lang_instruction}
 - 摘要長度約 150-300 字
 - 抓取章節的核心概念和重點
 - 保持客觀、簡潔的風格
@@ -75,12 +80,13 @@ class BaseSummarizer(ABC):
 		if not chapter_summaries or not chapter_summaries.strip():
 			return ''
 
+		lang_instruction = self._get_language_instruction(language)
 		prompt = f"""請根據以下各章節摘要，為整本書撰寫綜合摘要。
 
 書名：{book_title}
 
 要求：
-- 使用{language}撰寫
+- {lang_instruction}
 - 摘要長度約 500-800 字
 - 綜合全書的主旨、核心論點和結論
 - 呈現書籍的整體架構和邏輯脈絡
@@ -122,6 +128,7 @@ class BaseSummarizer(ABC):
 			return existing_summary
 
 		new_content = self._truncate_content(new_content, max_chars=200000)
+		lang_instruction = self._get_language_instruction(language)
 
 		if not existing_summary:
 			prompt = f"""請為以下書籍的第一個章節撰寫初始摘要。
@@ -130,7 +137,7 @@ class BaseSummarizer(ABC):
 章節 {chapter_index}/{total_chapters}：{new_title}
 
 要求：
-- 使用{language}撰寫
+- {lang_instruction}
 - 摘要長度約 200-400 字
 - 抓取章節的核心概念和重點
 - 這是全書摘要的起點，後續會逐章精煉
@@ -153,7 +160,7 @@ class BaseSummarizer(ABC):
 {new_content}
 
 要求：
-- 使用{language}撰寫
+- {lang_instruction}
 - 將新章節的重點整合到現有摘要中
 - 保持摘要的連貫性和邏輯流暢
 - 摘要長度可隨內容增加適度擴展（目前建議 {min(300 + chapter_index * 50, 800)} 字左右）
@@ -181,6 +188,7 @@ class BaseSummarizer(ABC):
 		Returns:
 			Final polished summary.
 		"""
+		lang_instruction = self._get_language_instruction(language)
 		prompt = f"""請將以下逐章精煉的書籍摘要進行最終整理和潤飾。
 
 書名：{book_title}
@@ -189,7 +197,7 @@ class BaseSummarizer(ABC):
 {refined_summary}
 
 要求：
-- 使用{language}撰寫
+- {lang_instruction}
 - 確保結構完整、邏輯清晰
 - 摘要長度約 500-800 字
 - 涵蓋全書的主旨、核心論點、主要方法和結論
@@ -262,7 +270,7 @@ class OpenAISummarizer(BaseSummarizer):
 		self,
 		api_key: Optional[str] = None,
 		model: Optional[str] = None,
-		max_tokens: int = 2048,
+		max_tokens: int = 8192,
 	):
 		"""
 		Initialize OpenAI summarizer.
@@ -304,6 +312,99 @@ class OpenAISummarizer(BaseSummarizer):
 			raise
 
 
+class OllamaSummarizer(BaseSummarizer):
+	"""Ollama API wrapper for text summarization using local models."""
+
+	DEFAULT_MODEL = 'gpt-oss:20b'
+	DEFAULT_BASE_URL = 'http://localhost:11434/v1'
+
+	def __init__(
+		self,
+		model: Optional[str] = None,
+		base_url: Optional[str] = None,
+		max_tokens: int = 4096,
+	):
+		"""
+		Initialize Ollama summarizer.
+
+		Args:
+			model: Model to use. Defaults to gpt-oss:20b.
+			base_url: Ollama API base URL. Defaults to http://localhost:11434/v1.
+			max_tokens: Maximum tokens for response.
+		"""
+		super().__init__(max_tokens)
+		self.base_url = base_url or os.environ.get('OLLAMA_BASE_URL', self.DEFAULT_BASE_URL)
+		self.model = model or self.DEFAULT_MODEL
+
+		# Ollama uses OpenAI-compatible API
+		self.client = openai.OpenAI(
+			base_url=self.base_url,
+			api_key='ollama',  # Ollama doesn't require API key but openai lib needs one
+		)
+
+	def _get_language_instruction(self, language: str) -> str:
+		"""Get stronger language instruction for Ollama models."""
+		return f'不論原始文本使用哪種語言，請務必以{language}撰寫輸出，禁止以其他語言為主體'
+
+	def _call_api(self, prompt: str) -> str:
+		"""Make API call to Ollama with language reinforcement and post-processing."""
+		# Add language reminder at the end of the prompt
+		prompt_with_reminder = prompt + '\n\n【重要提醒】請確保輸出完全使用繁體中文（正體中文），禁止使用簡體中文或其他語言。'
+
+		try:
+			response = self.client.chat.completions.create(
+				model=self.model,
+				max_completion_tokens=self.max_tokens,
+				messages=[{'role': 'user', 'content': prompt_with_reminder}],
+				extra_body={
+					'options': {
+						'num_ctx': 64000,
+						'num_predict': 2048,
+					}
+				},
+			)
+			content = response.choices[0].message.content
+			result = content if content else ''
+
+			# Post-process: convert to Traditional Chinese
+			return self._convert_to_traditional_chinese(result)
+		except openai.APIError as e:
+			print(f"Ollama API Error: {e}")
+			raise
+
+	def _convert_to_traditional_chinese(self, text: str) -> str:
+		"""Convert text to Traditional Chinese using Ollama."""
+		if not text or not text.strip():
+			return text
+
+		conversion_prompt = f"""這是一段書籍摘要文本，請執行以下轉換：
+1. 將簡體中文字轉換為對應的繁體中文字
+2. 將英文或其他語言的段落翻譯為繁體中文
+3. 已經是繁體中文的部分保持不變
+
+直接輸出轉換結果，不要加任何說明：
+
+{text}"""
+
+		try:
+			response = self.client.chat.completions.create(
+				model=self.model,
+				max_completion_tokens=self.max_tokens,
+				messages=[{'role': 'user', 'content': conversion_prompt}],
+				extra_body={
+					'options': {
+						'num_ctx': 64000,
+						'num_predict': 2048,
+					}
+				},
+			)
+			content = response.choices[0].message.content
+			return content if content else text
+		except openai.APIError as e:
+			print(f"Ollama API Error during conversion: {e}")
+			return text  # Return original text if conversion fails
+
+
 def _create_summarizer(
 	provider: str = 'claude',
 	api_key: Optional[str] = None,
@@ -328,10 +429,12 @@ def _create_summarizer(
 		return ClaudeSummarizer(api_key=api_key, model=model)
 	elif provider == 'openai':
 		return OpenAISummarizer(api_key=api_key, model=model)
+	elif provider == 'ollama':
+		return OllamaSummarizer(model=model)
 	else:
 		raise ValueError(
 			f"Unsupported provider: {provider}. "
-			"Supported providers: 'claude', 'openai'"
+			"Supported providers: 'claude', 'openai', 'ollama'"
 		)
 
 

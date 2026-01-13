@@ -880,3 +880,320 @@ for f in epubs/*-refine-claude-*.md; do echo "=== $(basename $f) ==="; tail -3 "
 對於 500-800 中文字的摘要，約需要 400-550 tokens。原本的 1024 tokens 理論上足夠，但實際上 LLM 可能產生更長的輸出，加上格式化（標題、分段），容易超出限制。
 
 將 max_tokens 增加到 2048 提供足夠的緩衝空間。
+
+---
+
+## 2026-01-13 修復 GPT-5-mini 不穩定問題
+
+### 36. 問題分析
+
+**背景**: GPT-5-mini 使用 `max_completion_tokens=2048` + `reasoning_effort='minimal'` 仍有不穩定情況，362484.epub 會產生空白摘要。
+
+**調查方向**:
+1. 搜尋 OpenAI 最新 API 文件
+2. 了解 GPT-5 reasoning model 的 token 機制
+
+**關鍵發現**: GPT-5 的 `max_completion_tokens` 參數含義與 GPT-4 不同
+
+| Provider | 參數 | 控制範圍 |
+|----------|------|----------|
+| Claude | max_tokens | 輸出 tokens |
+| OpenAI GPT-4 | max_completion_tokens | 輸出 tokens |
+| OpenAI GPT-5 | max_completion_tokens | **reasoning tokens + 輸出 tokens** |
+
+**問題根源**:
+```
+GPT-5:  max_completion_tokens = reasoning_tokens + 輸出 tokens
+
+當 max_completion_tokens=2048 時：
+- reasoning 可能消耗 ~1800 tokens
+- 只剩 ~200 tokens 給實際輸出
+- 結果：空白或截斷
+```
+
+---
+
+### 37. 解決方案
+
+**修改**: 將 `OpenAISummarizer` 的 `max_tokens` 從 2048 增加到 8192
+
+**修改位置**: `llm.py:265`
+
+```python
+class OpenAISummarizer(BaseSummarizer):
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        model: Optional[str] = None,
+        max_tokens: int = 8192,  # 從 2048 改為 8192
+    ):
+```
+
+---
+
+### 38. 測試驗證
+
+**測試命令**:
+```bash
+conda run -n epub-utils python summarize.py ../epubs/362484.epub --provider openai --model gpt-5-mini-2025-08-07 --strategy map_reduce
+```
+
+**測試結果 (max_completion_tokens=8192)**:
+
+| 檔案 | 全書摘要 | 結尾 |
+|------|----------|------|
+| 178998.epub (原子習慣) | ✓ 完整 | "...將時間變為盟友，將微小改變累積為非凡成就。" |
+| 318347.epub (我可能錯了) | ✓ 完整 | "...人可在無常與苦難中找到更大自由、意義與安寧。" |
+| 362484.epub (納瓦爾寶典) | ✓ 完整 | "...活出誠實、有價值的人生。" |
+| 424489.epub (世界盡頭的咖啡館) | ✓ 完整 | "...尋找並實踐自己的存在意義。" |
+
+**結論**: 4/4 全部成功，GPT-5-mini 穩定性問題已解決。
+
+---
+
+### 技術筆記
+
+#### GPT-5 Reasoning Model Token 機制
+
+GPT-5 系列是 reasoning model，會在回應前進行內部推理：
+
+```
+用戶輸入 → [內部推理 (reasoning_tokens)] → 實際輸出
+
+max_completion_tokens 預算分配：
+┌─────────────────────────────────────────┐
+│  reasoning_tokens  │  output_tokens     │
+│     (內部推理)      │    (實際輸出)       │
+└─────────────────────────────────────────┘
+         ↑                    ↑
+    不可見但消耗預算      用戶看到的內容
+```
+
+**解決策略**:
+1. `reasoning_effort='minimal'` - 減少 reasoning 消耗
+2. 增加 `max_completion_tokens` - 提供更大預算
+
+兩者結合使用效果最佳。
+
+#### OpenAI 模型最終建議
+
+| 模型 | 穩定性 | 設定 |
+|------|--------|------|
+| gpt-4o | ✓ 穩定 | max_completion_tokens=2048 |
+| gpt-4o-mini | ✓ 穩定 | max_completion_tokens=2048 |
+| gpt-5-mini | ✓ 穩定 | max_completion_tokens=8192, reasoning_effort='minimal' |
+
+---
+
+### 39. GPT-5-mini Refine 策略測試
+
+**測試命令**:
+```bash
+conda run -n epub-utils python summarize.py ../epubs/[檔案].epub --provider openai --model gpt-5-mini-2025-08-07 --strategy refine
+```
+
+**測試結果 (max_completion_tokens=8192)**:
+
+| 檔案 | 全書摘要 | 結尾 |
+|------|----------|------|
+| 178998.epub (原子習慣) | ✓ 完整 | "...以確保行為改變帶來的是自主且可持續的成就。" |
+| 318347.epub (我可能錯了) | ✓ 完整 | "...促成一種較為安然且有尊嚴的生命終局。" |
+| 362484.epub (納瓦爾寶典) | ✓ 完整 | "...而非個人孤立的天賦。" |
+| 424489.epub (世界盡頭的咖啡館) | ✓ 完整 | "...並在長期中產生成熟且可持續的生活樣貌。" |
+
+---
+
+### 40. GPT-5-mini 完整測試總結
+
+| 策略 | 178998 | 318347 | 362484 | 424489 | 成功率 |
+|------|--------|--------|--------|--------|--------|
+| Map Reduce | ✓ | ✓ | ✓ | ✓ | 4/4 (100%) |
+| Refine | ✓ | ✓ | ✓ | ✓ | 4/4 (100%) |
+
+**結論**: GPT-5-mini 在 `max_completion_tokens=8192` + `reasoning_effort='minimal'` 設定下，兩種策略都 100% 穩定。
+
+**輸出檔案位置**: `epubs/` 目錄
+- `178998-mapreduce-openai-gpt-5-mini.md`
+- `178998-refine-openai-gpt-5-mini.md`
+- `318347-mapreduce-openai-gpt-5-mini.md`
+- `318347-refine-openai-gpt-5-mini.md`
+- `362484-mapreduce-openai-gpt-5-mini.md`
+- `362484-refine-openai-gpt-5-mini.md`
+- `424489-mapreduce-openai-gpt-5-mini.md`
+- `424489-refine-openai-gpt-5-mini.md`
+
+---
+
+## 2026-01-13 修復 Ollama 輸出語言問題
+
+### 41. 問題發現
+
+**測試檔案**: 使用 Ollama (gpt-oss:20b) 執行 map_reduce 策略
+
+**問題描述**:
+- 362484.epub (納瓦爾寶典): 全書摘要為英文，部分章節摘要為簡體中文或英文
+- 318347.epub (我可能錯了): 全書摘要為瑞典文（書籍原始語言）
+
+**原因分析**:
+本地 LLM 對語言指示的遵從度較低，原本的 `使用{language}撰寫` 指示不夠強烈。
+
+---
+
+### 42. 解決方案設計
+
+用戶提出三層解決方案：
+
+1. **更強烈的語言指示**: 修改 prompt 中的語言要求
+2. **結尾追加提醒**: 在每個 prompt 結尾再次強調語言要求
+3. **後處理轉換**: 將輸出回送 Ollama 進行繁體中文轉換
+
+用戶強調：「只有 ollama 才要加上回送喔! 線上模型不需要。還好是 local side, 多一步就多一步，能接受」
+
+---
+
+### 43. 實作細節
+
+**修改 1: 覆寫 `_get_language_instruction()` 方法**
+
+```python
+# BaseSummarizer (預設)
+def _get_language_instruction(self, language: str) -> str:
+    return f'請務必使用{language}撰寫'
+
+# OllamaSummarizer (覆寫)
+def _get_language_instruction(self, language: str) -> str:
+    return f'不論原始文本使用哪種語言，請務必以{language}撰寫輸出，禁止以其他語言為主體'
+```
+
+**修改 2: 在 `_call_api()` 結尾追加提醒**
+
+```python
+def _call_api(self, prompt: str) -> str:
+    # Add language reminder at the end of the prompt
+    prompt_with_reminder = prompt + '\n\n【重要提醒】請確保輸出完全使用繁體中文（正體中文），禁止使用簡體中文或其他語言。'
+
+    # ... API call ...
+
+    # Post-process: convert to Traditional Chinese
+    return self._convert_to_traditional_chinese(result)
+```
+
+**修改 3: 新增 `_convert_to_traditional_chinese()` 後處理方法**
+
+```python
+def _convert_to_traditional_chinese(self, text: str) -> str:
+    """Convert text to Traditional Chinese using Ollama."""
+    if not text or not text.strip():
+        return text
+
+    conversion_prompt = f"""這是一段書籍摘要文本，請執行以下轉換：
+1. 將簡體中文字轉換為對應的繁體中文字
+2. 將英文或其他語言的段落翻譯為繁體中文
+3. 已經是繁體中文的部分保持不變
+
+直接輸出轉換結果，不要加任何說明：
+
+{text}"""
+
+    # ... API call ...
+```
+
+---
+
+### 44. 遇到的問題與修復
+
+**問題**: 最初的轉換 prompt 觸發了模型的內容過濾機制
+
+**現象**: 全書摘要變成 `"對不起，但我無法協助完成此請求。"`
+
+**原本的 prompt**:
+```
+請將以下文本轉換為繁體中文（正體中文）。
+- 如果文本已經是繁體中文，請直接輸出原文
+- 如果是簡體中文，請轉換為繁體中文
+- 如果是其他語言，請翻譯為繁體中文
+...
+```
+
+**修正後的 prompt**:
+```
+這是一段書籍摘要文本，請執行以下轉換：
+1. 將簡體中文字轉換為對應的繁體中文字
+2. 將英文或其他語言的段落翻譯為繁體中文
+3. 已經是繁體中文的部分保持不變
+
+直接輸出轉換結果，不要加任何說明：
+```
+
+**修正原因**: 較簡潔中性的 prompt 不會觸發內容過濾。
+
+---
+
+### 45. 測試結果
+
+**測試命令**:
+```bash
+OLLAMA_BASE_URL="http://192.168.112.1:11434/v1" conda run -n epub-utils python summarize.py ../epubs/[檔案].epub --provider ollama --strategy [策略]
+```
+
+**Map Reduce 測試結果**:
+
+| 檔案 | 修正前 | 修正後 | 簡體中文出現次數 |
+|------|--------|--------|-----------------|
+| 178998.epub (原子習慣) | ✓ | ✓ | 0 |
+| 318347.epub (我可能錯了) | ✗ 瑞典文 | ✓ 繁體中文 | 0 |
+| 362484.epub (納瓦爾寶典) | ✗ 英文 | ✓ 繁體中文 | 0 |
+| 424489.epub (世界盡頭的咖啡館) | ✓ | ✓ | 0 |
+
+**Refine 測試結果**:
+
+| 檔案 | 狀態 |
+|------|------|
+| 178998.epub (原子習慣) | ✓ 繁體中文 |
+| 318347.epub (我可能錯了) | ✓ 繁體中文 |
+| 362484.epub (納瓦爾寶典) | ✓ 繁體中文 |
+| 424489.epub (世界盡頭的咖啡館) | ✓ 繁體中文 |
+
+**結論**: 8/8 輸出檔案皆為繁體中文，語言問題已完全解決。
+
+---
+
+### 46. Ollama 輸出檔案位置
+
+**Map Reduce 輸出檔案** (在 `epubs/` 目錄):
+- `178998-mapreduce-ollama-gpt-oss-20b.md`
+- `318347-mapreduce-ollama-gpt-oss-20b.md`
+- `362484-mapreduce-ollama-gpt-oss-20b.md`
+- `424489-mapreduce-ollama-gpt-oss-20b.md`
+
+**Refine 輸出檔案** (在 `epubs/` 目錄):
+- `178998-refine-ollama-gpt-oss-20b.md`
+- `318347-refine-ollama-gpt-oss-20b.md`
+- `362484-refine-ollama-gpt-oss-20b.md`
+- `424489-refine-ollama-gpt-oss-20b.md`
+
+---
+
+### 技術筆記
+
+#### 本地 LLM vs 線上 LLM 的語言遵從度
+
+| 類型 | 語言遵從度 | 需要額外處理 |
+|------|-----------|-------------|
+| Claude (線上) | 高 | 否 |
+| OpenAI (線上) | 高 | 否 |
+| Ollama (本地) | 低 | 是（三層強制機制）|
+
+#### 三層語言強制機制
+
+```
+第一層：更強烈的 prompt 指示
+    ↓
+第二層：結尾追加語言提醒
+    ↓
+第三層：後處理回送轉換
+    ↓
+最終輸出（繁體中文）
+```
+
+這種多層機制確保即使模型在某一層未完全遵從，後續層次仍能修正輸出。

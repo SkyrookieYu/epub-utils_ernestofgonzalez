@@ -451,7 +451,7 @@ def main(
 		language: Output language.
 		output_file: Optional file to save results.
 		strategy: Summarization strategy ('map_reduce' or 'refine').
-		provider: LLM provider ('claude' or 'openai').
+		provider: LLM provider ('claude', 'openai', or 'ollama').
 	"""
 	print(f"載入 EPUB: {epub_path}")
 
@@ -561,8 +561,10 @@ def main(
 			# Use default model names
 			if provider.lower() == 'claude':
 				model_suffix = 'claude-haiku-4-5'
+			elif provider.lower() == 'openai':
+				model_suffix = 'gpt-4o'
 			else:
-				model_suffix = 'gpt-5-mini'
+				model_suffix = 'gpt-oss-20b'
 		# Simplify model name for filename (remove date suffix)
 		model_suffix = model_suffix.split('-202')[0]  # Remove date like -20250514 or -2025-08-07
 		output_file = os.path.join(epub_dir, f"{epub_basename}-{strategy_suffix}-{provider_suffix}-{model_suffix}.md")
@@ -604,6 +606,12 @@ if __name__ == '__main__':
   # 使用英文輸出
   python summarize.py book.epub --language en
 
+  # 使用本地 Ollama 模型
+  python summarize.py book.epub --provider ollama
+
+  # 使用 Ollama 指定模型
+  python summarize.py book.epub --provider ollama --model llama3:70b
+
 策略說明:
   map_reduce: 先為每個章節生成摘要，再合併成全書摘要（產生章節摘要）
   refine: 逐章節精煉摘要，最終產生全書摘要（僅產生全書摘要，更連貫）
@@ -611,6 +619,7 @@ if __name__ == '__main__':
 LLM 提供者:
   claude: 使用 Anthropic Claude API（需設定 ANTHROPIC_API_KEY）
   openai: 使用 OpenAI API（需設定 OPENAI_API_KEY）
+  ollama: 使用本地 Ollama API（預設 http://localhost:11434）
 		""",
 	)
 
@@ -628,7 +637,7 @@ LLM 提供者:
 	)
 	parser.add_argument(
 		'--provider',
-		choices=['claude', 'openai'],
+		choices=['claude', 'openai', 'ollama'],
 		default='claude',
 		help='LLM 提供者（預設: claude）',
 	)
@@ -638,12 +647,12 @@ LLM 提供者:
 	)
 	parser.add_argument(
 		'--model',
-		help='模型名稱（Claude 預設: claude-haiku-4-5-20251001, OpenAI 預設: gpt-5-mini-2025-08-07）',
+		help='模型名稱（Claude 預設: claude-haiku-4-5-20251001, OpenAI 預設: gpt-4o, Ollama 預設: qwen3:20b）',
 	)
 	parser.add_argument(
 		'--language',
-		default='zh-TW',
-		help='輸出語言（預設: zh-TW）',
+		default='zh-TW(繁體中文/正體中文)',
+		help='輸出語言（預設: zh-TW(繁體中文/正體中文)）',
 	)
 	parser.add_argument(
 		'-o', '--output',

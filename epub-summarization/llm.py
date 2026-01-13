@@ -335,6 +335,7 @@ class OllamaSummarizer(BaseSummarizer):
 		super().__init__(max_tokens)
 		self.base_url = base_url or os.environ.get('OLLAMA_BASE_URL', self.DEFAULT_BASE_URL)
 		self.model = model or self.DEFAULT_MODEL
+		self._language = 'zh-TW(繁體中文/正體中文)'  # Default language, updated by high-level methods
 
 		# Ollama uses OpenAI-compatible API
 		self.client = openai.OpenAI(
@@ -346,10 +347,60 @@ class OllamaSummarizer(BaseSummarizer):
 		"""Get stronger language instruction for Ollama models."""
 		return f'不論原始文本使用哪種語言，請務必以{language}撰寫輸出，禁止以其他語言為主體'
 
+	def _expand_language(self, language: str) -> str:
+		"""Expand language code to more descriptive form for better LLM understanding."""
+		if language == 'zh-TW':
+			return 'zh-TW(繁體中文/正體中文)'
+		return language
+
+	def summarize_chapter(self, content: str, title: str, language: str = 'zh-TW') -> str:
+		"""Override to track current language."""
+		self._language = self._expand_language(language)
+		return super().summarize_chapter(content, title, language)
+
+	def summarize_book(
+		self, chapter_summaries: str, book_title: str, language: str = 'zh-TW'
+	) -> str:
+		"""Override to track current language."""
+		self._language = self._expand_language(language)
+		return super().summarize_book(chapter_summaries, book_title, language)
+
+	def refine_summary(
+		self,
+		existing_summary: str,
+		new_content: str,
+		new_title: str,
+		book_title: str,
+		chapter_index: int,
+		total_chapters: int,
+		language: str = 'zh-TW',
+	) -> str:
+		"""Override to track current language."""
+		self._language = self._expand_language(language)
+		return super().refine_summary(
+			existing_summary=existing_summary,
+			new_content=new_content,
+			new_title=new_title,
+			book_title=book_title,
+			chapter_index=chapter_index,
+			total_chapters=total_chapters,
+			language=language,
+		)
+
+	def finalize_refined_summary(
+		self,
+		refined_summary: str,
+		book_title: str,
+		language: str = 'zh-TW',
+	) -> str:
+		"""Override to track current language."""
+		self._language = self._expand_language(language)
+		return super().finalize_refined_summary(refined_summary, book_title, language)
+
 	def _call_api(self, prompt: str) -> str:
 		"""Make API call to Ollama with language reinforcement and post-processing."""
 		# Add language reminder at the end of the prompt
-		prompt_with_reminder = prompt + '\n\n【重要提醒】請確保輸出完全使用繁體中文（正體中文），禁止使用簡體中文或其他語言。'
+		prompt_with_reminder = prompt + f'\n\n【重要提醒】請確保輸出完全使用{self._language}，禁止使用其他語言。'
 
 		try:
 			response = self.client.chat.completions.create(
@@ -366,21 +417,20 @@ class OllamaSummarizer(BaseSummarizer):
 			content = response.choices[0].message.content
 			result = content if content else ''
 
-			# Post-process: convert to Traditional Chinese
-			return self._convert_to_traditional_chinese(result)
+			# Post-process: convert to target language
+			return self._convert_to_target_language(result)
 		except openai.APIError as e:
 			print(f"Ollama API Error: {e}")
 			raise
 
-	def _convert_to_traditional_chinese(self, text: str) -> str:
-		"""Convert text to Traditional Chinese using Ollama."""
+	def _convert_to_target_language(self, text: str) -> str:
+		"""Convert text to target language using Ollama."""
 		if not text or not text.strip():
 			return text
 
 		conversion_prompt = f"""這是一段書籍摘要文本，請執行以下轉換：
-1. 將簡體中文字轉換為對應的繁體中文字
-2. 將英文或其他語言的段落翻譯為繁體中文
-3. 已經是繁體中文的部分保持不變
+1. 將非{self._language}的文字轉換為{self._language}
+2. 已經是{self._language}的部分保持不變
 
 直接輸出轉換結果，不要加任何說明：
 
